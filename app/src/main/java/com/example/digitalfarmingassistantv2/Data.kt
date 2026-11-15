@@ -20,7 +20,10 @@ data class Diagnosis(
     val imagePath: String,
     val time: Long,
     val done: Boolean,
-    val code: String
+    val code: String,
+    val disease: Int = 0,
+    val rot: Int = 0,
+    val pest: Int = 0
 )
 
 data class Post(
@@ -125,13 +128,15 @@ class Db(ctx: Context) {
     fun diags(): List<Diagnosis> = read("diags") { o ->
         Diagnosis(
             o.getLong("id"), o.getString("o"), o.getString("p"),
-            o.getLong("t"), o.getBoolean("d"), o.optString("c", "")
+            o.getLong("t"), o.getBoolean("d"), o.optString("c", ""),
+            o.optInt("dz", 0), o.optInt("rt", 0), o.optInt("pt", 0)
         )
     }
 
     fun saveDiags(l: List<Diagnosis>) = write("diags", l) { d ->
         JSONObject().put("id", d.id).put("o", d.owner).put("p", d.imagePath)
             .put("t", d.time).put("d", d.done).put("c", d.code)
+            .put("dz", d.disease).put("rt", d.rot).put("pt", d.pest)
     }
 
     fun posts(): List<Post> = read("posts") { o ->

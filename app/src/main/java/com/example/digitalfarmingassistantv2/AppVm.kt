@@ -1,3 +1,4 @@
+
 package com.example.digitalfarmingassistantv2
 
 import android.app.Application
@@ -39,6 +40,28 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     var usingDefaultLocation by mutableStateOf(true)
         private set
     var toast by mutableStateOf<String?>(null)
+    var previewPath by mutableStateOf<String?>(null)
+        private set
+
+    val savedCrops = mutableStateListOf<CropInfo>()
+
+    private val cropDb by lazy { CropDb(ctx) }
+
+    fun searchCrops(q: String, category: String, season: String, soil: String): List<CropInfo> {
+        return try {
+            cropDb.search(q, category, season, soil)
+        } catch (e: Exception) {
+            CROP_SEED.filter { it.matches(q) && it.passes(category, season, soil) }
+        }
+    }
+
+    fun cropCount(): Int {
+        return try {
+            cropDb.count()
+        } catch (e: Exception) {
+            CROP_SEED.size
+        }
+    }
 
     val accounts = mutableStateListOf<Account>()
     val diags = mutableStateListOf<Diagnosis>()
@@ -75,6 +98,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         if (savedName != null) {
             user = accounts.firstOrNull { it.username == savedName && it.active }
         }
+
+        loadSaved()
 
         val sl = db.getString("lat")?.toDoubleOrNull()
         val so = db.getString("lon")?.toDoubleOrNull()
@@ -138,6 +163,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
             return tr(bn, "This account is deactivated", "এই অ্যাকাউন্টটি নিষ্ক্রিয় করা হয়েছে")
         }
         user = a
+        loadSaved()
         db.putString("session", a.username)
         log("Login: " + a.username)
         checkAlerts()
@@ -158,6 +184,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         addNote(u, "WELCOME", "")
         log("Registered: " + u)
         user = a
+        loadSaved()
         db.putString("session", u)
         checkAlerts()
         return null
@@ -167,6 +194,8 @@ class AppVm(app: Application) : AndroidViewModel(app) {
         val u = user
         if (u != null) log("Logout: " + u.username)
         user = null
+        savedCrops.clear()
+        previewPath = null
         db.remove("session")
     }
 
@@ -232,7 +261,7 @@ class AppVm(app: Application) : AndroidViewModel(app) {
     private fun process(d: Diagnosis) {
         if (!processing.add(d.id)) return
         Thread {
-            val code = analyzeImage(d.imagePath)
+            val res = analyzeImage(d.imagePath)
             try {
                 Thread.sleep(800)
             } catch (e: InterruptedException) {
@@ -240,7 +269,10 @@ class AppVm(app: Application) : AndroidViewModel(app) {
             main.post {
                 val i = diags.indexOfFirst { it.id == d.id }
                 if (i >= 0) {
-                    diags[i] = diags[i].copy(done = true, code = code)
+                    diags[i] = diags[i].copy(
+                        done = true, code = res.code,
+                        disease = res.disease, rot = res.rot, pest = res.pest
+                    )
                     saveDiags()
                     addNote(d.owner, "DIAG", d.id.toString())
                     log("Diagnosis completed for " + d.owner)
@@ -319,10 +351,77 @@ class AppVm(app: Application) : AndroidViewModel(app) {
             val k = a.kind + "," + a.date
             if (seen.add(k)) {
                 addNote(u.username, "ALERT", a.kind + "|" + a.date + "|" + a.value.toString())
+                showSystemNotification(
+                    ctx, (a.kind + a.date).hashCode(),
+                    tr(bn, "Weather alert", "আবহাওয়া সতর্কতা"),
+                    alertText(a.kind, a.date, a.value, bn)
+                )
                 changed = true
             }
         }
         if (changed) db.putString(key, seen.joinToString(";"))
+    }
+
+    // ---------- image preview (5.1) ----------
+    fun stageUri(uri: Uri) {
+        Thread {
+            val path = copyUriToFile(ctx, uri)
+            main.post {
+                if (path != null) previewPath = path
+                else say("Could not read the image", "ছবিটি পড়া যায়নি")
+            }
+        }.start()
+    }
+
+    fun confirmPreview() {
+        val p = previewPath ?: return
+        val owner = user?.username ?: return
+        previewPath = null
+        addDiagnosis(owner, p)
+    }
+
+    fun cancelPreview() {
+        previewPath = null
+    }
+
+    // ---------- saved crops (3.4 / 3.5) ----------
+    private fun loadSaved() {
+        savedCrops.clear()
+        val u = user?.username ?: return
+        val names = (db.getString("saved_" + u) ?: "").split(";").filter { it.isNotEmpty() }
+        for (n in names) {
+            val js = db.getString("cropcache_" + n) ?: continue
+            val c = cropFromJson(js)
+            if (c != null) savedCrops.add(c)
+        }
+    }
+
+    fun isSaved(en: String): Boolean = savedCrops.any { it.name.en == en }
+
+    fun toggleSaved(c: CropInfo) {
+        val u = user?.username ?: return
+        if (isSaved(c.name.en)) {
+            savedCrops.removeAll { it.name.en == c.name.en }
+            say("Removed from saved crops", "সংরক্ষিত ফসল থেকে সরানো হয়েছে")
+        } else {
+            db.putString("cropcache_" + c.name.en, cropToJson(c))
+            savedCrops.add(c)
+            say("Saved on your device for offline use", "অফলাইনে ব্যবহারের জন্য ডিভাইসে সংরক্ষিত হয়েছে")
+        }
+        db.putString("saved_" + u, savedCrops.joinToString(";") { it.name.en })
+    }
+
+    // ---------- demo alert (4.4) ----------
+    fun sendTestAlert() {
+        val u = user ?: return
+        val date = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        addNote(u.username, "ALERT", "RAIN|" + date + "|45.0")
+        showSystemNotification(
+            ctx, 4401,
+            tr(bn, "Weather alert (test)", "আবহাওয়া সতর্কতা (পরীক্ষা)"),
+            alertText("RAIN", date, 45.0, bn)
+        )
+        say("Test alert sent. See Profile > Notifications.", "পরীক্ষামূলক সতর্কতা পাঠানো হয়েছে। প্রোফাইল > নোটিফিকেশন দেখুন।")
     }
 
     // ---------- notifications ----------

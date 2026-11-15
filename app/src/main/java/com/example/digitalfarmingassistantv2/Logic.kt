@@ -1,3 +1,4 @@
+
 package com.example.digitalfarmingassistantv2
 
 import android.Manifest
@@ -37,7 +38,7 @@ fun checkOnline(ctx: Context): Boolean {
         val c = cm.getNetworkCapabilities(n) ?: return false
         c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     } catch (e: Exception) {
-        false
+        true
     }
 }
 
@@ -111,14 +112,19 @@ fun loadBitmap(path: String, max: Int): Bitmap? {
     }
 }
 
+data class AnalysisResult(val code: String, val disease: Int, val rot: Int, val pest: Int)
+
 /**
- * PROTOTYPE analysis: a simple colour-based estimate (green vs brown/yellow pixels).
- * This is NOT a real AI model. Replace this function with a call to a real model/API.
+ * PROTOTYPE analysis: a colour-based estimate, NOT a trained AI model.
+ * Pixels are sorted into: green (healthy), brown (disease spots), very dark (rot),
+ * pale yellow (pest / chewing damage proxy). Replace with a real model/API later.
  */
-fun analyzeImage(path: String): String {
-    val bmp = loadBitmap(path, 128) ?: return "UNCLEAR"
+fun analyzeImage(path: String): AnalysisResult {
+    val bmp = loadBitmap(path, 160) ?: return AnalysisResult("UNCLEAR", 0, 0, 0)
     var green = 0
-    var bad = 0
+    var disease = 0
+    var rot = 0
+    var pest = 0
     val total = bmp.width * bmp.height
     for (y in 0 until bmp.height) {
         for (x in 0 until bmp.width) {
@@ -126,17 +132,53 @@ fun analyzeImage(path: String): String {
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
             val b = p and 0xFF
-            if (g > r + 8 && g > b + 8) {
+            val mx = maxOf(r, maxOf(g, b))
+            if (mx < 50) {
+                rot++
+            } else if (g > r + 8 && g > b + 8) {
                 green++
+            } else if (r > 150 && g > 140 && b < 110 && Math.abs(r - g) < 40) {
+                pest++
             } else if (r > b + 25 && r > 60 && r * 10 >= g * 8) {
-                bad++
+                disease++
             }
         }
     }
-    val plant = green + bad
-    if (total == 0 || plant < total * 0.15) return "UNCLEAR"
-    val ratio = bad.toDouble() / plant.toDouble()
-    return if (ratio < 0.12) "HEALTHY" else if (ratio < 0.35) "EARLY" else "SEVERE"
+    val leaf = green + disease + rot + pest
+    if (total == 0 || leaf < total * 0.15) return AnalysisResult("UNCLEAR", 0, 0, 0)
+    val dPct = Math.round(disease * 100.0 / leaf).toInt()
+    val rPct = Math.round(rot * 100.0 / leaf).toInt()
+    val pPct = Math.round(pest * 100.0 / leaf).toInt()
+    val damage = dPct + rPct + pPct
+    val code = if (damage < 12) "HEALTHY" else if (damage < 35) "EARLY" else "SEVERE"
+    return AnalysisResult(code, dPct, rPct, pPct)
+}
+
+/** Which problem is biggest: ROT, PEST, DISEASE or "" when there is nothing notable. */
+fun dominantKind(d: Diagnosis): String {
+    if (d.code == "HEALTHY" || d.code == "UNCLEAR") return ""
+    val m = maxOf(d.disease, maxOf(d.rot, d.pest))
+    if (m < 5) return ""
+    return if (d.rot == m) "ROT" else if (d.pest == m) "PEST" else "DISEASE"
+}
+
+fun extraAdvice(d: Diagnosis, b: Boolean): String = when (dominantKind(d)) {
+    "ROT" -> tr(
+        b,
+        "Rot signs: improve drainage, stop over-watering, remove and destroy rotting plant parts, and do not leave crop residue in the field.",
+        "পচনের লক্ষণ: পানি নিষ্কাশন ভালো করুন, অতিরিক্ত সেচ বন্ধ করুন, পচা অংশ তুলে ধ্বংস করুন এবং জমিতে ফসলের অবশিষ্টাংশ ফেলে রাখবেন না।"
+    )
+    "PEST" -> tr(
+        b,
+        "Pest signs: check the underside of leaves for insects, remove them by hand where possible, remove badly damaged leaves, and ask your local agriculture extension officer before using any pesticide.",
+        "পোকার লক্ষণ: পাতার নিচের দিকে পোকা আছে কিনা দেখুন, সম্ভব হলে হাতে বেছে ফেলুন, বেশি ক্ষতিগ্রস্ত পাতা তুলে ফেলুন এবং কীটনাশক ব্যবহারের আগে স্থানীয় কৃষি সম্প্রসারণ কর্মকর্তার পরামর্শ নিন।"
+    )
+    "DISEASE" -> tr(
+        b,
+        "Disease signs: remove infected leaves, avoid wetting leaves when watering, keep tools clean, and rotate crops next season.",
+        "রোগের লক্ষণ: আক্রান্ত পাতা তুলে ফেলুন, সেচের সময় পাতা ভেজানো এড়িয়ে চলুন, যন্ত্রপাতি পরিষ্কার রাখুন এবং পরের মৌসুমে ফসল পরিবর্তন করুন।"
+    )
+    else -> ""
 }
 
 fun diagTitle(code: String, b: Boolean): String = when (code) {
@@ -175,7 +217,7 @@ fun weatherUrl(lat: Double, lon: Double): String =
             "&longitude=" + String.format(Locale.US, "%.4f", lon) +
             "&current=temperature_2m,weather_code,wind_speed_10m" +
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum" +
-            "&timezone=auto&forecast_days=5"
+            "&timezone=auto&forecast_days=7"
 
 fun httpGet(url: String): String {
     val c = URL(url).openConnection() as HttpURLConnection
@@ -291,7 +333,10 @@ data class CropInfo(
     val fertilizer: Bi,
     val pests: Bi,
     val diseases: Bi,
-    val tips: Bi
+    val tips: Bi,
+    val category: String = "",
+    val season: String = "",
+    val soil: String = ""
 )
 
 fun CropInfo.sections(b: Boolean): List<Triple<Int, String, String>> = listOf(
@@ -371,3 +416,42 @@ val LIBRARY: List<CropInfo> = listOf(
             "প্রায় ১০০-১২০ দিনে পাট কাটুন। পরিষ্কার ও ধীর গতির পানিতে পাট পচালে আঁশের মান ভালো হয়।")
     )
 )
+
+
+// ---------------- Crop cache (saved crops, stored on the device) ----------------
+private fun biToJson(x: Bi): JSONObject = JSONObject().put("e", x.en).put("b", x.bnText)
+
+private fun biFromJson(o: JSONObject): Bi = Bi(o.getString("e"), o.getString("b"))
+
+fun cropToJson(c: CropInfo): String = JSONObject()
+    .put("n", biToJson(c.name))
+    .put("g", biToJson(c.growing))
+    .put("p", biToJson(c.planting))
+    .put("f", biToJson(c.fertilizer))
+    .put("s", biToJson(c.pests))
+    .put("d", biToJson(c.diseases))
+    .put("t", biToJson(c.tips))
+    .put("c", c.category)
+    .put("se", c.season)
+    .put("so", c.soil)
+    .toString()
+
+fun cropFromJson(s: String): CropInfo? {
+    return try {
+        val o = JSONObject(s)
+        CropInfo(
+            biFromJson(o.getJSONObject("n")),
+            biFromJson(o.getJSONObject("g")),
+            biFromJson(o.getJSONObject("p")),
+            biFromJson(o.getJSONObject("f")),
+            biFromJson(o.getJSONObject("s")),
+            biFromJson(o.getJSONObject("d")),
+            biFromJson(o.getJSONObject("t")),
+            o.optString("c", ""),
+            o.optString("se", ""),
+            o.optString("so", "")
+        )
+    } catch (e: Exception) {
+        null
+    }
+}

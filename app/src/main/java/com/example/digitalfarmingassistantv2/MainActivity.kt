@@ -1,3 +1,4 @@
+
 package com.example.digitalfarmingassistantv2
 
 import android.Manifest
@@ -6,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -291,12 +293,31 @@ fun diagColors(code: String): Pair<Color, Color> = when (code) {
     else -> Pair(Color(0xFFECEFF1), Color(0xFF546E7A))
 }
 
-fun cropEmoji(name: String): String = when (name) {
-    "Rice" -> "🌾"
+fun cropEmoji(c: CropInfo): String = when (c.name.en) {
+    "Rice", "Wheat" -> "🌾"
+    "Maize" -> "🌽"
     "Potato" -> "🥔"
     "Tomato" -> "🍅"
-    "Jute" -> "🌿"
-    else -> "🌱"
+    "Brinjal (Eggplant)" -> "🍆"
+    "Carrot" -> "🥕"
+    "Chilli" -> "🌶"
+    "Groundnut (Peanut)" -> "🥜"
+    "Banana" -> "🍌"
+    "Mango" -> "🥭"
+    "Watermelon" -> "🍉"
+    "Pumpkin" -> "🎃"
+    "Cucumber", "Bitter gourd", "Bottle gourd" -> "🥒"
+    "Cabbage", "Spinach", "Red amaranth" -> "🥬"
+    "Cauliflower" -> "🥦"
+    else -> when (c.category) {
+        "CEREAL" -> "🌾"
+        "VEG" -> "🥗"
+        "PULSE" -> "🌱"
+        "OIL" -> "🌻"
+        "FRUIT" -> "🍎"
+        "SPICE" -> "🌿"
+        else -> "🌱"
+    }
 }
 
 fun weatherEmptyText(state: String, b: Boolean): String = when (state) {
@@ -467,8 +488,18 @@ fun HomeScaffold(vm: AppVm) {
     var tab by remember { mutableStateOf(0) }
     var showWeather by remember { mutableStateOf(false) }
     val b = vm.bn
+    val ctx = LocalContext.current
 
     BackHandler(enabled = showWeather) { showWeather = false }
+
+    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val tabs = listOf(
         Triple("🏠", tr(b, "Home", "হোম"), 0),
@@ -597,8 +628,37 @@ fun HomeTab(vm: AppVm, onTab: (Int) -> Unit, onWeather: () -> Unit) {
 }
 
 // ======================================================================
-// Crop health
+// Crop health  (5.1 capture + preview, 5.2 summary, 5.3 queue, 5.4 history)
 // ======================================================================
+@Composable
+fun PercentBar(label: String, value: Int, color: Color) {
+    val v = value.coerceIn(0, 100)
+    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Row {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            Text(v.toString() + "%", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(2.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color(0xFFE0E6DC))
+        ) {
+            if (v > 0) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(v / 100f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(50))
+                        .background(color)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun CropScreen(vm: AppVm) {
     val b = vm.bn
@@ -606,11 +666,11 @@ fun CropScreen(vm: AppVm) {
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) vm.submitUri(uri)
+        if (uri != null) vm.stageUri(uri)
     }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val u = pendingUri
-        if (success && u != null) vm.submitUri(u)
+        if (success && u != null) vm.stageUri(u)
     }
     val cameraPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -623,6 +683,8 @@ fun CropScreen(vm: AppVm) {
     }
 
     val mine = vm.diags.filter { it.owner == vm.user?.username }
+    val pending = mine.count { !it.done }
+    val preview = vm.previewPath
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader(
@@ -633,31 +695,79 @@ fun CropScreen(vm: AppVm) {
             if (!vm.isOnline) {
                 AppCard(container = Color(0xFFFFF8E1)) {
                     Text(
-                        tr(b, "📴 You are offline. New photos are saved and checked automatically when internet returns.",
-                            "📴 আপনি অফলাইনে আছেন। নতুন ছবি সংরক্ষিত থাকবে এবং ইন্টারনেট এলে স্বয়ংক্রিয়ভাবে পরীক্ষা হবে।")
+                        tr(b, "📴 You are offline. New photos are saved in the queue as Pending and analysed automatically when internet returns.",
+                            "📴 আপনি অফলাইনে আছেন। নতুন ছবি \"অপেক্ষমাণ\" হিসেবে জমা থাকবে এবং ইন্টারনেট এলে স্বয়ংক্রিয়ভাবে বিশ্লেষণ হবে।")
                     )
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = {
-                        val has = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                        if (has) {
-                            val u = createCameraUri(ctx)
-                            pendingUri = u
-                            cameraLauncher.launch(u)
-                        } else {
-                            cameraPermLauncher.launch(Manifest.permission.CAMERA)
+
+            if (preview != null) {
+                AppCard {
+                    Text(
+                        tr(b, "Preview", "প্রিভিউ"),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = FarmGreenDark
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val pb = remember(preview) { loadBitmap(preview, 900) }
+                    if (pb != null) {
+                        Image(
+                            bitmap = pb.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxWidth().height(230.dp).clip(RoundedCornerShape(16.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = { vm.cancelPreview() },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) { Text(tr(b, "✖ Cancel", "✖ বাতিল")) }
+                        Button(
+                            onClick = { vm.confirmPreview() },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Text(
+                                if (vm.isOnline) tr(b, "🔬 Analyse", "🔬 বিশ্লেষণ") else tr(b, "💾 Add to queue", "💾 কিউতে যোগ করুন"),
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.weight(1f).height(54.dp)
-                ) { Text(tr(b, "📷 Take photo", "📷 ছবি তুলুন"), fontWeight = FontWeight.Bold) }
-                OutlinedButton(
-                    onClick = { galleryLauncher.launch("image/*") },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.weight(1f).height(54.dp)
-                ) { Text(tr(b, "🖼 Gallery", "🖼 গ্যালারি"), fontWeight = FontWeight.Bold) }
+                    }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            val has = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                            if (has) {
+                                val u = createCameraUri(ctx)
+                                pendingUri = u
+                                cameraLauncher.launch(u)
+                            } else {
+                                cameraPermLauncher.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f).height(54.dp)
+                    ) { Text(tr(b, "📷 Take photo", "📷 ছবি তুলুন"), fontWeight = FontWeight.Bold) }
+                    OutlinedButton(
+                        onClick = { galleryLauncher.launch("image/*") },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f).height(54.dp)
+                    ) { Text(tr(b, "🖼 Upload", "🖼 আপলোড"), fontWeight = FontWeight.Bold) }
+                }
+            }
+
+            if (pending > 0) {
+                Pill(
+                    tr(b, "⏳ Pending in queue: ", "⏳ কিউতে অপেক্ষমাণ: ") + pending,
+                    Color(0xFFFFF8E1),
+                    Color(0xFF8D6E00)
+                )
             }
 
             SectionTitle(tr(b, "History", "ইতিহাস"))
@@ -692,19 +802,47 @@ fun DiagnosisCard(vm: AppVm, d: Diagnosis) {
                 Spacer(Modifier.height(6.dp))
                 if (!d.done) {
                     Pill(
-                        if (vm.isOnline) tr(b, "⏳ Analysing…", "⏳ বিশ্লেষণ চলছে…") else tr(b, "⏳ Queued — waiting for internet", "⏳ অপেক্ষমাণ — ইন্টারনেটের অপেক্ষায়"),
+                        if (vm.isOnline) tr(b, "⏳ Pending — analysing…", "⏳ অপেক্ষমাণ — বিশ্লেষণ চলছে…")
+                        else tr(b, "⏳ Pending — waiting for internet", "⏳ অপেক্ষমাণ — ইন্টারনেটের অপেক্ষায়"),
                         Color(0xFFFFF8E1),
                         Color(0xFF8D6E00)
                     )
                 } else {
                     val colors = diagColors(d.code)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Pill(tr(b, "✔ Done", "✔ সম্পন্ন"), FarmMint, FarmGreenDark)
+                    }
+                    Spacer(Modifier.height(6.dp))
                     Pill(diagTitle(d.code, b), colors.first, colors.second)
                 }
             }
         }
         if (d.done) {
+            if (d.code != "UNCLEAR") {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    tr(b, "Diagnosis summary", "ডায়াগনোসিস সারসংক্ষেপ"),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                val healthy = (100 - d.disease - d.rot - d.pest).coerceIn(0, 100)
+                PercentBar(tr(b, "🌿 Healthy tissue", "🌿 সুস্থ অংশ"), healthy, FarmLeaf)
+                PercentBar(tr(b, "🍂 Disease spots", "🍂 রোগের দাগ"), d.disease, Color(0xFFEF6C00))
+                PercentBar(tr(b, "🟤 Rot", "🟤 পচন"), d.rot, Color(0xFF6D4C41))
+                PercentBar(tr(b, "🐛 Pest damage", "🐛 পোকার ক্ষতি"), d.pest, Color(0xFFF9A825))
+            }
             Spacer(Modifier.height(10.dp))
+            Text(
+                tr(b, "Recommended actions", "করণীয়"),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
             Text(diagAdvice(d.code, b), style = MaterialTheme.typography.bodyMedium)
+            val extra = extraAdvice(d, b)
+            if (extra.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(extra, style = MaterialTheme.typography.bodyMedium)
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 tr(b, "Prototype colour-based estimate, not a laboratory diagnosis.", "এটি রঙভিত্তিক প্রোটোটাইপ অনুমান, ল্যাব ডায়াগনোসিস নয়।"),
@@ -716,7 +854,7 @@ fun DiagnosisCard(vm: AppVm, d: Diagnosis) {
 }
 
 // ======================================================================
-// Weather
+// Weather  (4.4 alerts + notifications)
 // ======================================================================
 @Composable
 fun WeatherScreen(vm: AppVm, onBack: () -> Unit) {
@@ -776,7 +914,26 @@ fun WeatherScreen(vm: AppVm, onBack: () -> Unit) {
                     }
                 }
 
-                SectionTitle(tr(b, "5-day forecast", "৫ দিনের পূর্বাভাস"))
+                AppCard {
+                    Text(
+                        tr(b, "🔔 Alert rules", "🔔 সতর্কতার নিয়ম"),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        tr(b, "You get a notification when the forecast shows: rain of 30 mm or more in a day, a day of 38°C or hotter, or wind of 40 km/h or more.",
+                            "পূর্বাভাসে দিনে ৩০ মিমি বা বেশি বৃষ্টি, ৩৮°সে বা তার বেশি গরম, অথবা ৪০ কিমি/ঘণ্টা বা বেশি বাতাস থাকলে আপনি নোটিফিকেশন পাবেন।"),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { vm.sendTestAlert() },
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text(tr(b, "🔔 Send test alert", "🔔 পরীক্ষামূলক সতর্কতা পাঠান")) }
+                }
+
+                SectionTitle(tr(b, "7-day forecast", "৭ দিনের পূর্বাভাস"))
                 AppCard {
                     w.days.forEach { d ->
                         val label = weatherText(d.code, b)
@@ -802,81 +959,164 @@ fun WeatherScreen(vm: AppVm, onBack: () -> Unit) {
 }
 
 // ======================================================================
-// Crop library
+// Crop library  (SQLite database + search, filters, save for offline)
 // ======================================================================
+@Composable
+fun FilterRow(title: String, opts: List<Opt>, selected: String, b: Boolean, onSelect: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = FarmGreenDark)
+        Spacer(Modifier.height(4.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            opts.forEach { o ->
+                Pill(
+                    if (b) o.bnText else o.en,
+                    if (selected == o.code) FarmGreen else FarmMint,
+                    if (selected == o.code) Color.White else FarmGreenDark,
+                    Modifier.clickable { onSelect(o.code) }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun LibraryScreen(vm: AppVm) {
     val b = vm.bn
     var q by remember { mutableStateOf("") }
-    var cat by remember { mutableStateOf(0) }
-    val cats = listOf(
-        tr(b, "All", "সব"),
-        tr(b, "Growing", "চাষ"),
-        tr(b, "Planting", "রোপণ"),
-        tr(b, "Fertilizer", "সার"),
-        tr(b, "Pests", "পোকা"),
-        tr(b, "Diseases", "রোগ"),
-        tr(b, "Tips", "পরামর্শ")
-    )
-    val results = LIBRARY.filter { it.matches(q) }
+    var catCode by remember { mutableStateOf("") }
+    var seasonCode by remember { mutableStateOf("") }
+    var soilCode by remember { mutableStateOf("") }
+    var showFilters by remember { mutableStateOf(false) }
+    var showSaved by remember { mutableStateOf(false) }
+
+    val total = remember { vm.cropCount() }
+    val dbResults = remember(q, catCode, seasonCode, soilCode) { vm.searchCrops(q, catCode, seasonCode, soilCode) }
+    val results: List<CropInfo> = if (showSaved) {
+        vm.savedCrops.filter { it.matches(q) && it.passes(catCode, seasonCode, soilCode) }
+    } else {
+        dbResults
+    }
+    val activeFilters = listOf(catCode, seasonCode, soilCode).count { it.isNotEmpty() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader(
             tr(b, "Crop Library", "ফসল তথ্য ভাণ্ডার"),
-            tr(b, "Available offline", "অফলাইনেও পাওয়া যায়")
+            tr(b, "Search " + total + " crops. Save the ones you need offline.", total.toString() + "টি ফসল খুঁজুন। অফলাইনের জন্য সংরক্ষণ করুন।")
         )
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill(
+                    tr(b, "📚 All crops (", "📚 সব ফসল (") + total + ")",
+                    if (!showSaved) FarmGreen else FarmMint,
+                    if (!showSaved) Color.White else FarmGreenDark,
+                    Modifier.weight(1f).clickable { showSaved = false }
+                )
+                Pill(
+                    tr(b, "⭐ Saved (", "⭐ সংরক্ষিত (") + vm.savedCrops.size + ")",
+                    if (showSaved) FarmGreen else FarmMint,
+                    if (showSaved) Color.White else FarmGreenDark,
+                    Modifier.weight(1f).clickable { showSaved = true }
+                )
+            }
+            if (!vm.isOnline) {
+                Pill(
+                    tr(b, "📴 Offline — open Saved to read crops stored on your device", "📴 অফলাইন — ডিভাইসে রাখা ফসল পড়তে \"সংরক্ষিত\" খুলুন"),
+                    Color(0xFFFFF8E1),
+                    Color(0xFF8D6E00)
+                )
+            }
             OutlinedTextField(
                 value = q,
                 onValueChange = { q = it },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 leadingIcon = { Text("🔍") },
-                label = { Text(tr(b, "Search crop, pest or disease", "ফসল, পোকা বা রোগ খুঁজুন")) },
+                label = { Text(tr(b, "Search crop, pest, disease or tip", "ফসল, পোকা, রোগ বা পরামর্শ খুঁজুন")) },
                 modifier = Modifier.fillMaxWidth()
             )
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                cats.forEachIndexed { i, label ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill(
+                    tr(b, "⚙ Filters", "⚙ ফিল্টার") + (if (activeFilters > 0) " (" + activeFilters + ")" else ""),
+                    if (showFilters || activeFilters > 0) FarmGreen else FarmMint,
+                    if (showFilters || activeFilters > 0) Color.White else FarmGreenDark,
+                    Modifier.clickable { showFilters = !showFilters }
+                )
+                if (activeFilters > 0) {
                     Pill(
-                        label,
-                        if (cat == i) FarmGreen else FarmMint,
-                        if (cat == i) Color.White else FarmGreenDark,
-                        Modifier.clickable { cat = i }
+                        tr(b, "✖ Clear", "✖ মুছুন"),
+                        Color(0xFFFFEBEE),
+                        FarmRed,
+                        Modifier.clickable { catCode = ""; seasonCode = ""; soilCode = "" }
                     )
                 }
             }
-            if (results.isEmpty()) {
-                AppCard { EmptyState("🔎", tr(b, "Nothing found. Try another word.", "কিছু পাওয়া যায়নি। অন্য শব্দ চেষ্টা করুন।")) }
+            if (showFilters) {
+                AppCard {
+                    FilterRow(tr(b, "Category", "ধরন"), CATEGORY_OPTS, catCode, b) { catCode = it }
+                    Spacer(Modifier.height(10.dp))
+                    FilterRow(tr(b, "Season", "মৌসুম"), SEASON_OPTS, seasonCode, b) { seasonCode = it }
+                    Spacer(Modifier.height(10.dp))
+                    FilterRow(tr(b, "Soil type", "মাটির ধরন"), SOIL_OPTS, soilCode, b) { soilCode = it }
+                }
             }
-            results.forEach { crop -> CropCard(crop, b, cat) }
+
+            Text(
+                results.size.toString() + tr(b, " crops found", "টি ফসল পাওয়া গেছে"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (showSaved && vm.savedCrops.isEmpty()) {
+                AppCard {
+                    EmptyState("⭐", tr(b, "No saved crops yet. Tap the star on a crop to save it.", "এখনো কোনো ফসল সংরক্ষিত নেই। সংরক্ষণ করতে ফসলের তারকায় ট্যাপ করুন।"))
+                }
+            } else if (results.isEmpty()) {
+                AppCard { EmptyState("🔎", tr(b, "Nothing found. Try another word or clear the filters.", "কিছু পাওয়া যায়নি। অন্য শব্দ চেষ্টা করুন বা ফিল্টার মুছুন।")) }
+            }
+            results.forEach { crop ->
+                CropCard(crop, b, vm.isSaved(crop.name.en)) { vm.toggleSaved(crop) }
+            }
+            Text(
+                tr(b, "General guidance for Bangladesh. Confirm with your local agriculture extension office for your area.",
+                    "বাংলাদেশের জন্য সাধারণ নির্দেশনা। আপনার এলাকার জন্য স্থানীয় কৃষি সম্প্রসারণ অফিসের সাথে নিশ্চিত হয়ে নিন।"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(8.dp))
         }
     }
 }
 
 @Composable
-fun CropCard(crop: CropInfo, b: Boolean, cat: Int) {
-    var open by remember(cat) { mutableStateOf(cat != 0) }
+fun CropCard(crop: CropInfo, b: Boolean, saved: Boolean, onToggleSave: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
     AppCard(Modifier.clickable { open = !open }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(50.dp).clip(CircleShape).background(FarmMint),
                 contentAlignment = Alignment.Center
-            ) { Text(cropEmoji(crop.name.en), fontSize = 26.sp) }
+            ) { Text(cropEmoji(crop), fontSize = 26.sp) }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(crop.name.of(b), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    tr(b, "Tap to see details", "বিস্তারিত দেখতে ট্যাপ করুন"),
+                    optLabel(CATEGORY_OPTS, crop.category, b) + " • " + codesLabel(SEASON_OPTS, crop.season, b),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            Text(
+                if (saved) "⭐" else "☆",
+                fontSize = 26.sp,
+                modifier = Modifier.clickable { onToggleSave() }.padding(8.dp)
+            )
             Text(if (open) "▲" else "▼", color = FarmGreen)
         }
         if (open) {
             Spacer(Modifier.height(10.dp))
-            crop.sections(b).filter { cat == 0 || it.first == cat }.forEach { (_, label, text) ->
+            Pill("🌍 " + codesLabel(SOIL_OPTS, crop.soil, b), FarmMint, FarmGreenDark)
+            Spacer(Modifier.height(10.dp))
+            crop.sections(b).forEach { (_, label, text) ->
                 Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = FarmGreen)
                 Text(text, style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(8.dp))
