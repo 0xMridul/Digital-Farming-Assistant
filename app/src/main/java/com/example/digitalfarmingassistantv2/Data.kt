@@ -1,3 +1,4 @@
+
 package com.example.digitalfarmingassistantv2
 
 import android.content.Context
@@ -23,14 +24,20 @@ data class Diagnosis(
     val code: String,
     val disease: Int = 0,
     val rot: Int = 0,
-    val pest: Int = 0
+    val pest: Int = 0,
+    val problem: String = "",
+    val adviceEn: String = "",
+    val adviceBn: String = "",
+    val source: String = ""
 )
 
+/** A forum post stored in the cloud (Firebase Firestore). image = Base64 JPEG, "" if none. */
 data class Post(
-    val id: Long,
+    val id: String,
+    val ownerUid: String,
     val author: String,
     val text: String,
-    val imagePath: String,
+    val image: String,
     val likedBy: List<String>,
     val comments: List<String>,
     val reportedBy: List<String>,
@@ -75,12 +82,6 @@ fun newSalt(): String {
     val b = ByteArray(16)
     SecureRandom().nextBytes(b)
     return b.joinToString("") { "%02x".format(it) }
-}
-
-private fun JSONArray.strings(): List<String> {
-    val out = ArrayList<String>()
-    for (i in 0 until length()) out.add(getString(i))
-    return out
 }
 
 class Db(ctx: Context) {
@@ -129,7 +130,8 @@ class Db(ctx: Context) {
         Diagnosis(
             o.getLong("id"), o.getString("o"), o.getString("p"),
             o.getLong("t"), o.getBoolean("d"), o.optString("c", ""),
-            o.optInt("dz", 0), o.optInt("rt", 0), o.optInt("pt", 0)
+            o.optInt("dz", 0), o.optInt("rt", 0), o.optInt("pt", 0),
+            o.optString("pb", ""), o.optString("ae", ""), o.optString("ab", ""), o.optString("sr", "")
         )
     }
 
@@ -137,20 +139,7 @@ class Db(ctx: Context) {
         JSONObject().put("id", d.id).put("o", d.owner).put("p", d.imagePath)
             .put("t", d.time).put("d", d.done).put("c", d.code)
             .put("dz", d.disease).put("rt", d.rot).put("pt", d.pest)
-    }
-
-    fun posts(): List<Post> = read("posts") { o ->
-        Post(
-            o.getLong("id"), o.getString("a"), o.getString("x"), o.optString("p", ""),
-            o.getJSONArray("l").strings(), o.getJSONArray("c").strings(),
-            o.getJSONArray("r").strings(), o.getLong("t")
-        )
-    }
-
-    fun savePosts(l: List<Post>) = write("posts", l) { p ->
-        JSONObject().put("id", p.id).put("a", p.author).put("x", p.text).put("p", p.imagePath)
-            .put("l", JSONArray(p.likedBy)).put("c", JSONArray(p.comments))
-            .put("r", JSONArray(p.reportedBy)).put("t", p.time)
+            .put("pb", d.problem).put("ae", d.adviceEn).put("ab", d.adviceBn).put("sr", d.source)
     }
 
     fun notes(): List<Note> = read("notes") { o ->

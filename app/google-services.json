@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1033083873704",
+    "project_id": "digital-farming-assistance",
+    "storage_bucket": "digital-farming-assistance.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1033083873704:android:875313e69d67262d10959d",
+        "android_client_info": {
+          "package_name": "com.example.digitalfarmingassistantv2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REDACTED"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

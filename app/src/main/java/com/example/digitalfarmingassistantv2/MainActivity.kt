@@ -361,6 +361,7 @@ fun AuthScreen(vm: AppVm) {
     var name by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
     val b = vm.bn
 
     Column(
@@ -456,26 +457,24 @@ fun AuthScreen(vm: AppVm) {
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = {
-                        error = if (mode == 0) vm.login(name, pass) else vm.register(name, pass)
+                        busy = true
+                        error = null
+                        val cb: (String?) -> Unit = { err ->
+                            busy = false
+                            error = err
+                        }
+                        if (mode == 0) vm.login(name, pass, cb) else vm.register(name, pass, cb)
                     },
-                    enabled = name.isNotBlank() && pass.isNotBlank(),
+                    enabled = name.isNotBlank() && pass.isNotBlank() && !busy,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth().height(50.dp)
                 ) {
                     Text(
-                        if (mode == 0) tr(b, "Login", "লগইন") else tr(b, "Create account", "অ্যাকাউন্ট তৈরি করুন"),
+                        if (busy) "…" else if (mode == 0) tr(b, "Login", "লগইন") else tr(b, "Create account", "অ্যাকাউন্ট তৈরি করুন"),
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Text(
-                tr(b, "Admin demo login: admin / admin123", "অ্যাডমিন ডেমো: admin / admin123"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
@@ -814,10 +813,25 @@ fun DiagnosisCard(vm: AppVm, d: Diagnosis) {
                     }
                     Spacer(Modifier.height(6.dp))
                     Pill(diagTitle(d.code, b), colors.first, colors.second)
+                    Spacer(Modifier.height(6.dp))
+                    Pill(
+                        if (d.source == "AI") tr(b, "🤖 AI analysis", "🤖 এআই বিশ্লেষণ")
+                        else tr(b, "📱 On-device estimate", "📱 ডিভাইসের অনুমান"),
+                        FarmMint,
+                        FarmGreenDark
+                    )
                 }
             }
         }
         if (d.done) {
+            if (d.problem.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    tr(b, "Most likely: ", "সম্ভাব্য সমস্যা: ") + d.problem,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
             if (d.code != "UNCLEAR") {
                 Spacer(Modifier.height(12.dp))
                 Text(
@@ -837,15 +851,25 @@ fun DiagnosisCard(vm: AppVm, d: Diagnosis) {
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            Text(diagAdvice(d.code, b), style = MaterialTheme.typography.bodyMedium)
-            val extra = extraAdvice(d, b)
-            if (extra.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text(extra, style = MaterialTheme.typography.bodyMedium)
+            val aiAdvice = if (b) d.adviceBn else d.adviceEn
+            if (d.source == "AI" && aiAdvice.isNotEmpty()) {
+                Text(aiAdvice, style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Text(diagAdvice(d.code, b), style = MaterialTheme.typography.bodyMedium)
+                val extra = extraAdvice(d, b)
+                if (extra.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(extra, style = MaterialTheme.typography.bodyMedium)
+                }
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                tr(b, "Prototype colour-based estimate, not a laboratory diagnosis.", "এটি রঙভিত্তিক প্রোটোটাইপ অনুমান, ল্যাব ডায়াগনোসিস নয়।"),
+                if (d.source == "AI") {
+                    tr(b, "AI estimate from a photo, not a laboratory diagnosis. Confirm with your local agriculture officer.",
+                        "ছবি থেকে এআই-এর অনুমান, ল্যাব ডায়াগনোসিস নয়। স্থানীয় কৃষি কর্মকর্তার সাথে নিশ্চিত হয়ে নিন।")
+                } else {
+                    tr(b, "Prototype colour-based estimate, not a laboratory diagnosis.", "এটি রঙভিত্তিক প্রোটোটাইপ অনুমান, ল্যাব ডায়াগনোসিস নয়।")
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -941,9 +965,9 @@ fun WeatherScreen(vm: AppVm, onBack: () -> Unit) {
                             Text(label.substringBefore(" "), fontSize = 26.sp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(d.date, fontWeight = FontWeight.SemiBold)
+                                Text(dayNameBoth(d.date, b), fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    label.substringAfter(" ") + "  •  💧 " + num(d.rain, 1) + " mm",
+                                    dateText(d.date, b) + "  •  " + label.substringAfter(" ") + "  •  💧 " + num(d.rain, 1) + " mm",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1126,23 +1150,49 @@ fun CropCard(crop: CropInfo, b: Boolean, saved: Boolean, onToggleSave: () -> Uni
 }
 
 // ======================================================================
-// Forum
+// Forum  (shared cloud forum: Firebase Firestore)
 // ======================================================================
 @Composable
 fun ForumScreen(vm: AppVm) {
     val b = vm.bn
     var text by remember { mutableStateOf("") }
+    var search by remember { mutableStateOf("") }
     var attach by remember { mutableStateOf<Uri?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> attach = uri }
-    val isAdmin = vm.user?.isAdmin == true
-    val visible = vm.posts.filter { it.reportedBy.isEmpty() || isAdmin || it.author == vm.user?.username }
+    val q = search.trim()
+    val visible = vm.posts.filter { p ->
+        val hidden = p.reportedBy.size >= REPORT_HIDE_THRESHOLD && !vm.cloudAdmin && p.ownerUid != vm.myUid
+        !hidden && (q.isEmpty() ||
+                p.text.contains(q, ignoreCase = true) ||
+                p.author.contains(q, ignoreCase = true) ||
+                p.comments.any { it.contains(q, ignoreCase = true) })
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader(
             tr(b, "Community", "কমিউনিটি"),
-            tr(b, "Ask, share and learn with other farmers", "অন্য কৃষকদের সাথে প্রশ্ন, শেয়ার ও শিখুন")
+            tr(b, "Ask, share and learn with farmers everywhere", "সব এলাকার কৃষকদের সাথে প্রশ্ন, শেয়ার ও শিখুন")
         )
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val err = vm.cloudError
+            if (err != null) {
+                AppCard(container = Color(0xFFFFEBEE)) {
+                    Text("☁ " + cloudErrorText(err, b), color = Color(0xFF8E0000))
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { vm.retryCloud() }, shape = RoundedCornerShape(12.dp)) {
+                        Text(tr(b, "Retry", "আবার চেষ্টা করুন"))
+                    }
+                }
+            } else if (!vm.cloudReady) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(tr(b, "Connecting to the community…", "কমিউনিটির সাথে সংযোগ হচ্ছে…"))
+                }
+            } else {
+                Pill(tr(b, "☁ Live — shared with all farmers", "☁ লাইভ — সব কৃষকের সাথে শেয়ার করা"), FarmMint, FarmGreenDark)
+            }
+
             AppCard {
                 OutlinedTextField(
                     value = text,
@@ -1161,7 +1211,7 @@ fun ForumScreen(vm: AppVm) {
                     }
                     Spacer(Modifier.weight(1f))
                     Button(
-                        enabled = text.isNotBlank(),
+                        enabled = text.isNotBlank() && vm.myUid.isNotEmpty(),
                         shape = RoundedCornerShape(12.dp),
                         onClick = {
                             vm.createPost(text, attach)
@@ -1171,8 +1221,30 @@ fun ForumScreen(vm: AppVm) {
                     ) { Text(tr(b, "Post", "পোস্ট"), fontWeight = FontWeight.Bold) }
                 }
             }
+
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                leadingIcon = { Text("🔍") },
+                label = { Text(tr(b, "Search problems and solutions", "সমস্যা ও সমাধান খুঁজুন")) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                visible.size.toString() + tr(b, " posts", "টি পোস্ট"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
             if (visible.isEmpty()) {
-                AppCard { EmptyState("💬", tr(b, "No posts yet. Be the first to ask!", "এখনো কোনো পোস্ট নেই। প্রথম প্রশ্নটি আপনিই করুন!")) }
+                AppCard {
+                    EmptyState(
+                        "💬",
+                        if (q.isNotEmpty()) tr(b, "No posts match your search.", "আপনার খোঁজার সাথে মিলে এমন পোস্ট নেই।")
+                        else tr(b, "No posts yet. Be the first to ask!", "এখনো কোনো পোস্ট নেই। প্রথম প্রশ্নটি আপনিই করুন!")
+                    )
+                }
             }
             visible.forEach { p -> PostCard(vm, p) }
             Spacer(Modifier.height(8.dp))
@@ -1183,11 +1255,11 @@ fun ForumScreen(vm: AppVm) {
 @Composable
 fun PostCard(vm: AppVm, p: Post) {
     val b = vm.bn
-    val me = vm.user?.username ?: ""
-    val isAdmin = vm.user?.isAdmin == true
     var comment by remember { mutableStateOf("") }
-    val liked = p.likedBy.contains(me)
-    val reportedByMe = p.reportedBy.contains(me)
+    val liked = vm.myUid.isNotEmpty() && p.likedBy.contains(vm.myUid)
+    val reportedByMe = vm.myUid.isNotEmpty() && p.reportedBy.contains(vm.myUid)
+    val mine = vm.myUid.isNotEmpty() && p.ownerUid == vm.myUid
+    val canDelete = mine || vm.cloudAdmin
 
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1197,14 +1269,16 @@ fun PostCard(vm: AppVm, p: Post) {
                 Text(p.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text(fmtTime(p.time), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (p.reportedBy.isNotEmpty() && isAdmin) {
+            if (p.reportedBy.isNotEmpty() && (vm.cloudAdmin || mine)) {
                 Pill("⚠ " + p.reportedBy.size, MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.error)
             }
         }
         Spacer(Modifier.height(10.dp))
         Text(p.text, style = MaterialTheme.typography.bodyLarge)
-        if (p.imagePath.isNotEmpty()) {
-            val bmp = remember(p.imagePath) { loadBitmap(p.imagePath, 700) }
+        if (p.image.isNotEmpty()) {
+            LaunchedEffect(p.id) { vm.loadImage(p.id) }
+            val photoData = vm.imageCache[p.id] ?: ""
+            val bmp = remember(photoData) { if (photoData.isEmpty()) null else decodeB64Bitmap(photoData) }
             if (bmp != null) {
                 Spacer(Modifier.height(8.dp))
                 Image(
@@ -1223,13 +1297,15 @@ fun PostCard(vm: AppVm, p: Post) {
                     fontWeight = if (liked) FontWeight.Bold else FontWeight.Normal
                 )
             }
-            TextButton(enabled = !reportedByMe, onClick = { vm.reportPost(p.id) }) {
-                Text(if (reportedByMe) tr(b, "Reported", "রিপোর্ট হয়েছে") else tr(b, "Report", "রিপোর্ট"))
+            if (!mine) {
+                TextButton(enabled = !reportedByMe, onClick = { vm.reportPost(p.id) }) {
+                    Text(if (reportedByMe) tr(b, "Reported", "রিপোর্ট হয়েছে") else tr(b, "Report", "রিপোর্ট"))
+                }
             }
-            if (p.author == me || isAdmin) {
+            if (canDelete) {
                 TextButton(onClick = { vm.removePost(p.id) }) { Text(tr(b, "Delete", "মুছুন")) }
             }
-            if (isAdmin && p.reportedBy.isNotEmpty()) {
+            if (vm.cloudAdmin && p.reportedBy.isNotEmpty()) {
                 TextButton(onClick = { vm.dismissReports(p.id) }) { Text(tr(b, "Dismiss", "খারিজ")) }
             }
         }
@@ -1299,10 +1375,6 @@ fun MoreScreen(vm: AppVm) {
                     Switch(checked = b, onCheckedChange = { vm.setLanguage(it) })
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(tr(b, "📴 Simulate offline mode", "📴 অফলাইন মোড সিমুলেট করুন"), Modifier.weight(1f))
-                    Switch(checked = vm.simOffline, onCheckedChange = { vm.updateSimOffline(it) })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         if (vm.isOnline) tr(b, "🟢 Status: Online", "🟢 অবস্থা: অনলাইন") else tr(b, "🔴 Status: Offline", "🔴 অবস্থা: অফলাইন"),
                         Modifier.weight(1f)
@@ -1333,7 +1405,7 @@ fun MoreScreen(vm: AppVm) {
             if (isAdmin) {
                 SectionTitle(tr(b, "Admin dashboard", "অ্যাডমিন ড্যাশবোর্ড"))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatTile(vm.accounts.size.toString(), tr(b, "Users", "ব্যবহারকারী"), Modifier.weight(1f))
+                    StatTile(vm.userList.size.toString(), tr(b, "Users", "ব্যবহারকারী"), Modifier.weight(1f))
                     StatTile(vm.posts.size.toString(), tr(b, "Posts", "পোস্ট"), Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1343,7 +1415,7 @@ fun MoreScreen(vm: AppVm) {
 
                 SectionTitle(tr(b, "User management", "ব্যবহারকারী ব্যবস্থাপনা"))
                 AppCard {
-                    vm.accounts.forEach { acc ->
+                    vm.userList.forEach { acc ->
                         Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(acc.username, 34.dp)
                             Spacer(Modifier.width(10.dp))
