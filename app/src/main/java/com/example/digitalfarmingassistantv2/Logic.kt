@@ -12,6 +12,7 @@ import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.util.Base64
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
@@ -19,6 +20,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -287,7 +289,64 @@ fun alertsFor(w: WeatherData): List<Alert> {
     return l
 }
 
-fun alertText(kind: String, date: String, v: Double, b: Boolean): String = when (kind) {
+// ---------- Day and date names in both languages ----------
+val DAYS_EN = listOf("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+val DAYS_BN = listOf("রবিবার", "সোমবার", "মঙ্গলবার", "বুধবার", "বৃহস্পতিবার", "শুক্রবার", "শনিবার")
+val MONTHS_EN = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+val MONTHS_BN = listOf(
+    "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন",
+    "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"
+)
+
+fun bnDigits(s: String): String {
+    val sb = StringBuilder()
+    for (ch in s) {
+        if (ch in '0'..'9') sb.append('\u09E6' + (ch - '0')) else sb.append(ch)
+    }
+    return sb.toString()
+}
+
+/** Turns "2026-11-28" into a Calendar, or null if it cannot be read. */
+private fun parseDay(iso: String): Calendar? {
+    return try {
+        val d = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso) ?: return null
+        val c = Calendar.getInstance()
+        c.time = d
+        c
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/** "Saturday · শনিবার" (the selected language comes first). */
+fun dayNameBoth(iso: String, b: Boolean): String {
+    val c = parseDay(iso) ?: return iso
+    val i = c.get(Calendar.DAY_OF_WEEK) - 1
+    return if (b) DAYS_BN[i] + " · " + DAYS_EN[i] else DAYS_EN[i] + " · " + DAYS_BN[i]
+}
+
+/** "28 Nov 2026" or "২৮ নভেম্বর ২০২৬". */
+fun dateText(iso: String, b: Boolean): String {
+    val c = parseDay(iso) ?: return iso
+    val d = c.get(Calendar.DAY_OF_MONTH).toString()
+    val m = c.get(Calendar.MONTH)
+    val y = c.get(Calendar.YEAR).toString()
+    return if (b) bnDigits(d) + " " + MONTHS_BN[m] + " " + bnDigits(y) else d + " " + MONTHS_EN[m] + " " + y
+}
+
+/** "Saturday, 28 Nov" or "শনিবার, ২৮ নভেম্বর" for use inside sentences. */
+fun friendlyDate(iso: String, b: Boolean): String {
+    val c = parseDay(iso) ?: return iso
+    val i = c.get(Calendar.DAY_OF_WEEK) - 1
+    val d = c.get(Calendar.DAY_OF_MONTH).toString()
+    val m = c.get(Calendar.MONTH)
+    return if (b) DAYS_BN[i] + ", " + bnDigits(d) + " " + MONTHS_BN[m] else DAYS_EN[i] + ", " + d + " " + MONTHS_EN[m]
+}
+
+fun alertText(kind: String, date: String, v: Double, b: Boolean): String =
+    alertTextRaw(kind, friendlyDate(date, b), v, b)
+
+private fun alertTextRaw(kind: String, date: String, v: Double, b: Boolean): String = when (kind) {
     "RAIN" -> tr(
         b,
         "⚠ Heavy rain expected on " + date + " (about " + num(v) + " mm). Delay spraying and fertilizer, and clear field drainage.",
@@ -453,5 +512,38 @@ fun cropFromJson(s: String): CropInfo? {
         )
     } catch (e: Exception) {
         null
+    }
+}
+
+
+// ---------------- Cloud forum helpers ----------------
+/** A post with this many reports is hidden from normal users (admins and the author still see it). */
+const val REPORT_HIDE_THRESHOLD = 3
+
+fun decodeB64Bitmap(s: String): Bitmap? {
+    return try {
+        val bytes = Base64.decode(s, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    } catch (e: Exception) {
+        null
+    }
+}
+
+fun cloudErrorText(raw: String, b: Boolean): String {
+    val r = raw.lowercase()
+    return if (r.contains("permission") || r.contains("insufficient")) {
+        tr(
+            b,
+            "The database rules block the app. Open Realtime Database > Rules and publish the open rules from the setup guide.",
+            "ডাটাবেসের নিয়ম অ্যাপকে আটকাচ্ছে। Realtime Database > Rules খুলে সেটআপ গাইডের নিয়মগুলো প্রকাশ (Publish) করুন।"
+        )
+    } else if (r.contains("unavailable") || r.contains("offline") || r.contains("network") || r.contains("resolve")) {
+        tr(
+            b,
+            "No connection to the cloud. Saved posts are shown and new posts will send when you are online.",
+            "ক্লাউডের সাথে সংযোগ নেই। সংরক্ষিত পোস্ট দেখানো হচ্ছে এবং অনলাইনে এলে নতুন পোস্ট যাবে।"
+        )
+    } else {
+        raw
     }
 }
