@@ -16,7 +16,7 @@ import java.net.URL
  * balance only. For a real release, keep the key on a small server (proxy) and call that instead.
  */
 object AiConfig {
-    const val API_KEY = "sk-4ae0461449404cdbb3755ba81e36b9ad"
+    const val API_KEY = "sk-REDACTED"
     const val BASE_URL = "https://api.deepseek.com"
 
     /** Tried in order. If the first is rejected (HTTP 400 / 404) the next one is tried. */
