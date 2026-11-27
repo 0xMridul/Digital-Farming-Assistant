@@ -13,7 +13,7 @@ import com.google.firebase.FirebaseOptions
 object CloudConfig {
     const val PROJECT_ID = "digital-farming-assistance"
     const val APP_ID = "1:1033083873704:android:875313e69d67262d10959d"
-    const val API_KEY = "AIzaSyAo_1suehwt-IW4pWUKkNYWFoqmR-IAkOY"
+    const val API_KEY = "REDACTED"
 
     /**
      * IMPORTANT: copy this from Firebase console > Realtime Database > Data tab
